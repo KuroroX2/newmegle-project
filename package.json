@@ -1,0 +1,19 @@
+{
+  "name": "newmegle-project",
+  "version": "1.0.0",
+  "description": "NewMegle - Chat y espionaje de conversaciones",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5",
+    "mongoose": "^8.4.1",
+    "@google/generative-ai": "^0.14.0",
+    "dotenv": "^16.4.5"
+  }
+}
