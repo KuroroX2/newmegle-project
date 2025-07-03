@@ -8,7 +8,6 @@ require('dotenv').config(); // Cargar variables de entorno del archivo .env
 
 const app = express();
 const server = http.createServer(app);
-// Configura Socket.IO para que se ejecute en el puerto 10000 para Render
 const io = socketIo(server, {
     cors: {
         origin: "*", // Permite cualquier origen para desarrollo
@@ -19,10 +18,9 @@ const io = socketIo(server, {
 const PORT = process.env.PORT || 10000; // Render usará el puerto 10000
 
 // --- Configuración de la Base de Datos (MongoDB) ---
-// Conecta a MongoDB Atlas. La URL debe venir de las variables de entorno de Render.
 const DB_URI = process.env.MONGODB_URI;
 if (!DB_URI) {
-    console.error("Error: La variable de entorno MONGODB_URI no está definida.");
+    console.error("Error: La variable de entorno MONGODB_URI no está definida. Asegúrate de configurarla en Render.");
     process.exit(1);
 }
 mongoose.connect(DB_URI)
@@ -34,8 +32,8 @@ const conversationSchema = new mongoose.Schema({
     roomId: String,
     participants: [{
         nick: String,
-        gender: String,
-        isBot: Boolean
+        gender: String, // 'masculino', 'femenino', 'cualquiera'
+        isBot: { type: Boolean, default: false }
     }],
     messages: [{
         nick: String,
@@ -44,17 +42,16 @@ const conversationSchema = new mongoose.Schema({
     }],
     likes: { type: Number, default: 0 },
     spyCount: { type: Number, default: 0 },
-    isActive: { type: Boolean, default: true }, // Si la conversación está activa o no
+    isActive: { type: Boolean, default: true }, // Si la conversación está activa o no (para espiar)
     isBotChat: { type: Boolean, default: false }
 }, { timestamps: true });
 
 const Conversation = mongoose.model('Conversation', conversationSchema);
 
-
 // --- Configuración de la IA (Google Gemini) ---
-const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY; // Obtenida de variables de entorno de Render
+const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 if (!GOOGLE_API_KEY) {
-    console.error("Error: La variable de entorno GOOGLE_API_KEY no está definida.");
+    console.error("Error: La variable de entorno GOOGLE_API_KEY no está definida. Asegúrate de configurarla en Render y que sea válida.");
     process.exit(1);
 }
 const genAI = new GoogleGenerativeAI(GOOGLE_API_KEY);
@@ -62,12 +59,24 @@ const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
 // --- Variables Globales del Servidor ---
 let waitingUsers = []; // Usuarios esperando chat (humanos)
-let activeRooms = {}; // Salas de chat activas { roomId: { users: [{ id, nick, gender, interest }], messages: [], likes, spyCount, isBotChat: false } }
-let botRooms = {}; // Salas de chat con bots
+let activeRooms = {}; // Salas de chat activas { roomId: { users: [{ id, nick, gender, interest }], messages: [], likes, spyCount, isBotChat } }
 
 // Función para generar un ID de sala único
 function generateRoomId() {
     return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+}
+
+// Función para obtener nombres aleatorios
+const maleNames = ["Alejandro", "Carlos", "Diego", "Felipe", "Gabriel", "Hugo", "Iván", "Javier", "Luis", "Mateo", "Pablo", "Ricardo"];
+const femaleNames = ["Ana", "Brenda", "Carla", "Daniela", "Elena", "Fernanda", "Gabriela", "Isabel", "Julia", "Laura", "María", "Sofía"];
+
+function getRandomName(genderType) {
+    if (genderType === 'masculino') {
+        return maleNames[Math.floor(Math.random() * maleNames.length)];
+    } else if (genderType === 'femenino') {
+        return femaleNames[Math.floor(Math.random() * femaleNames.length)];
+    }
+    return "Compañero Anónimo"; // Fallback, no debería usarse
 }
 
 // --- Servir archivos estáticos del frontend ---
@@ -82,7 +91,10 @@ io.on('connection', (socket) => {
         const user = { id: socket.id, ...userData };
         console.log(`Usuario ${user.nick} (${user.gender}) busca chat. Interés: ${user.interest}`);
 
-        // 1. Intentar emparejar con un humano
+        // 1. Quitar al usuario de la lista de espera si ya estaba por alguna razón
+        waitingUsers = waitingUsers.filter(u => u.id !== user.id);
+
+        // 2. Intentar emparejar con un humano
         let foundPartner = null;
         for (let i = 0; i < waitingUsers.length; i++) {
             const partner = waitingUsers[i];
@@ -142,29 +154,45 @@ io.on('connection', (socket) => {
             console.log(`Chat humano-humano iniciado: ${user.nick} y ${foundPartner.nick} en sala ${roomId}`);
 
         } else {
-            // 2. Si no hay humano, añadir a la lista de espera (por si llega alguien) y buscar bot
+            // 3. Si no hay humano, añadir a la lista de espera y luego buscar bot inmediatamente (o en X segundos si quisiéramos)
             waitingUsers.push(user);
             console.log(`${user.nick} añadido a la lista de espera. Total: ${waitingUsers.length}`);
 
-            // Emparejamiento con un bot (simplificado por ahora)
+            // Emparejamiento con un bot
             const roomId = generateRoomId();
-            const botName = "ChatBot NewMegle"; // Nombre del bot
-            const botGender = "cualquiera"; // Género del bot para emparejamiento
 
-            botRooms[roomId] = {
-                users: [user, { id: 'bot-' + roomId, nick: botName, gender: botGender }],
+            let botNick, botGender;
+            // Asignar nombre y género al bot según el interés del usuario
+            if (user.interest === 'masculino') { // Usuario busca masculino, bot es masculino
+                botNick = getRandomName('masculino');
+                botGender = 'masculino';
+            } else if (user.interest === 'femenino') { // Usuario busca femenino, bot es femenino
+                botNick = getRandomName('femenino');
+                botGender = 'femenino';
+            } else { // Usuario busca 'cualquiera', bot puede ser masculino o femenino al azar
+                const randomGender = Math.random() < 0.5 ? 'masculino' : 'femenino';
+                botNick = getRandomName(randomGender);
+                botGender = randomGender;
+            }
+
+            // Crear la sala del bot en activeRooms (simplificando la gestión de salas)
+            activeRooms[roomId] = {
+                users: [user, { id: 'bot-' + roomId, nick: botNick, gender: botGender, isBot: true }],
                 messages: [],
                 likes: 0,
                 spyCount: 0,
                 isBotChat: true
             };
 
-             // Guardar conversación en DB (marcar como bot)
-             const newConversation = new Conversation({
+            // Quitar al usuario de la lista de espera si se le asignó un bot
+            waitingUsers = waitingUsers.filter(u => u.id !== user.id);
+
+            // Guardar conversación en DB (marcar como bot)
+            const newConversation = new Conversation({
                 roomId: roomId,
                 participants: [
                     { nick: user.nick, gender: user.gender, isBot: false },
-                    { nick: botName, gender: botGender, isBot: true }
+                    { nick: botNick, gender: botGender, isBot: true }
                 ],
                 isBotChat: true
             });
@@ -173,17 +201,18 @@ io.on('connection', (socket) => {
             socket.join(roomId);
             socket.emit('bot_chat_started', {
                 roomId: roomId,
-                botName: botName,
-                spyCount: botRooms[roomId].spyCount,
-                likeCount: botRooms[roomId].likes
+                botNick: botNick, // Enviar el nick real del bot
+                botGender: botGender, // Enviar el género real del bot
+                spyCount: activeRooms[roomId].spyCount,
+                likeCount: activeRooms[roomId].likes
             });
-            console.log(`Chat con bot iniciado para ${user.nick} en sala ${roomId}`);
+            console.log(`Chat con bot iniciado para ${user.nick} con ${botNick} en sala ${roomId}`);
         }
     });
 
     socket.on('chat_message', async (data) => {
         const { roomId, message } = data;
-        let room = activeRooms[roomId] || botRooms[roomId];
+        let room = activeRooms[roomId];
         if (!room) return;
 
         const userNick = room.users.find(u => u.id === socket.id)?.nick || 'Desconocido';
@@ -197,16 +226,27 @@ io.on('connection', (socket) => {
         );
 
         // Enviar mensaje a todos en la sala (incluidos espías)
-        io.to(roomId).emit('chat_message', { nick: userNick, message: message }); // Para los del chat
+        io.to(roomId).emit('chat_message', { roomId: roomId, nick: userNick, message: message }); // Para los del chat
         io.to(roomId).emit('new_spy_message', { roomId: roomId, nick: userNick, message: message }); // Para los espías
 
 
         // Si es un chat con bot, hacer que el bot responda
         if (room.isBotChat) {
-            const botUser = room.users.find(u => u.id.startsWith('bot-'));
+            const botUser = room.users.find(u => u.isBot); // Encuentra el participante que es bot
             if (botUser) {
+                // Añadir un retraso para simular un tiempo de respuesta humano (2 a 5 segundos)
+                const delay = Math.floor(Math.random() * 3000) + 2000; // 2000ms (2s) a 5000ms (5s)
+                await new Promise(resolve => setTimeout(resolve, delay));
+
                 try {
-                    const result = await model.generateContent(message);
+                    // Historial para mantener el contexto con el bot
+                    const chatHistory = room.messages.map(msg => ({
+                        role: msg.nick === botUser.nick ? "model" : "user",
+                        parts: [{ text: msg.message }]
+                    }));
+
+                    const chat = model.startChat({ history: chatHistory });
+                    const result = await chat.sendMessage(message);
                     const response = await result.response;
                     const botMessage = response.text();
 
@@ -218,126 +258,135 @@ io.on('connection', (socket) => {
                         { $push: { messages: { nick: botUser.nick, message: botMessage } } }
                     );
 
-                    io.to(roomId).emit('chat_message', { nick: botUser.nick, message: botMessage });
-                    io.to(roomId).emit('new_spy_message', { roomId: roomId, nick: botUser.nick, message: botMessage }); // Para los espías
+                    io.to(roomId).emit('chat_message', { roomId: roomId, nick: botUser.nick, message: botMessage });
+                    io.to(roomId).emit('new_spy_message', { roomId: roomId, nick: botUser.nick, message: botMessage });
                     console.log(`Respuesta del bot en sala ${roomId}: ${botMessage}`);
                 } catch (error) {
-                    console.error("Error al generar respuesta de IA:", error);
-                    const errorMessage = "Lo siento, tuve un problema para entenderte.";
+                    console.error("Error al generar respuesta de IA (verificar API Key y configuración de Gemini):", error);
+                    const errorMessage = "Lo siento, parece que hay un pequeño problema en mi cerebro. ¿Podrías intentar otra pregunta?";
                     room.messages.push({ nick: botUser.nick, message: errorMessage });
                     await Conversation.updateOne(
                         { roomId: roomId },
                         { $push: { messages: { nick: botUser.nick, message: errorMessage } } }
                     );
-                    io.to(roomId).emit('chat_message', { nick: botUser.nick, message: errorMessage });
-                     io.to(roomId).emit('new_spy_message', { roomId: roomId, nick: botUser.nick, message: errorMessage });
+                    io.to(roomId).emit('chat_message', { roomId: roomId, nick: botUser.nick, message: errorMessage });
+                    io.to(roomId).emit('new_spy_message', { roomId: roomId, nick: botUser.nick, message: errorMessage });
                 }
             }
         }
     });
 
     socket.on('leave_chat', async (roomId) => {
-        let room = activeRooms[roomId] || botRooms[roomId];
-        if (!room) return;
+        let room = activeRooms[roomId];
+        if (!room) {
+            console.log(`Intento de salir de chat en sala ${roomId} que no existe o ya inactiva.`);
+            return;
+        }
 
         const leavingUserNick = room.users.find(u => u.id === socket.id)?.nick || 'Desconocido';
         console.log(`${leavingUserNick} ha abandonado la sala ${roomId}`);
 
-        // Actualizar estado de la conversación en DB
+        // Marcar conversación como inactiva en DB
         await Conversation.updateOne({ roomId: roomId }, { $set: { isActive: false } });
 
         // Notificar a todos en la sala (incluidos espías)
         io.to(roomId).emit('chat_ended', { reason: `${leavingUserNick} ha abandonado la conversación.` , roomId: roomId});
 
-        // Limpiar la sala y la lista de espera del usuario
-        if (activeRooms[roomId]) {
+        // Limpiar la sala y sacar usuarios
+        if (room.isBotChat) {
+             // Si es chat con bot, simplemente eliminar la sala
+            delete activeRooms[roomId];
+        } else {
+            // Si es chat humano-humano, sacar al otro usuario también
             const otherUser = room.users.find(u => u.id !== socket.id);
             if (otherUser) {
-                io.sockets.sockets.get(otherUser.id)?.leave(roomId); // Sacar al otro usuario de la sala
-                // Si el otro usuario es humano y se queda solo, ofrecerle buscar de nuevo o bot
-                // Por ahora, simplemente se termina para ambos
+                io.sockets.sockets.get(otherUser.id)?.leave(roomId);
             }
             delete activeRooms[roomId];
-        } else if (botRooms[roomId]) {
-            delete botRooms[roomId];
         }
-
-        // Sacar al usuario actual de la sala
-        socket.leave(roomId);
+        socket.leave(roomId); // Sacar al usuario que envió el leave_chat
 
         // Quitar al usuario de la lista de espera si estaba ahí
         waitingUsers = waitingUsers.filter(user => user.id !== socket.id);
 
-         // Si el usuario era espía y estaba en esta sala, también se saca
-         if (socket.isSpying && socket.spyRoomId === roomId) {
-            socket.leave(roomId);
-            delete socket.isSpying;
-            delete socket.spyRoomId;
-            console.log(`${socket.id} ha dejado de espiar la sala ${roomId} por cierre del chat.`);
-         }
+        // Si el usuario que salió era espía de otra sala, su estado de espía ya se maneja en 'disconnect'
     });
 
     // --- Lógica de Espionaje ---
     socket.on('request_spy_conversation', async () => {
-        if (socket.isSpying && socket.spyRoomId) { // Si ya estaba espiando una, la deja
-            await Conversation.updateOne({ roomId: socket.spyRoomId }, { $inc: { spyCount: -1 } });
-            io.to(socket.spyRoomId).emit('update_spy_info', {
-                roomId: socket.spyRoomId,
-                spyCount: (activeRooms[socket.spyRoomId] || botRooms[socket.spyRoomId])?.spyCount || 0,
-                likeCount: (activeRooms[socket.spyRoomId] || botRooms[socket.spyRoomId])?.likes || 0
-            });
-            socket.leave(socket.spyRoomId);
+        // Si el espía ya estaba espiando una, se debe "desuscribir" de ella antes de buscar otra
+        if (socket.currentSpyRoomId) {
+            let oldRoom = activeRooms[socket.currentSpyRoomId];
+            if (oldRoom) {
+                oldRoom.spyCount = Math.max(0, (oldRoom.spyCount || 0) - 1); // Decrementa el contador
+                await Conversation.updateOne({ roomId: socket.currentSpyRoomId }, { $inc: { spyCount: -1 } });
+                io.to(socket.currentSpyRoomId).emit('update_spy_info', {
+                    roomId: socket.currentSpyRoomId,
+                    spyCount: oldRoom.spyCount,
+                    likeCount: oldRoom.likes
+                });
+            }
+            socket.leave(socket.currentSpyRoomId);
+            delete socket.currentSpyRoomId;
+            console.log(`${socket.id} ha dejado de espiar la sala anterior.`);
         }
 
-        // Buscar conversaciones activas con al menos 6 interacciones
+        // Buscar conversaciones activas
+        // Ahora sí, requerimos al menos 6 mensajes para espiar una conversación interesante
         const eligibleConversations = await Conversation.find({
             isActive: true,
             'messages.5': { '$exists': true } // Asegura que hay al menos 6 mensajes (índice 5 es el 6to mensaje)
         });
 
         if (eligibleConversations.length > 0) {
-            // Elige una conversación al azar
-            const randomConversation = eligibleConversations[Math.floor(Math.random() * eligibleConversations.length)];
-            const roomId = randomConversation.roomId;
-            const roomData = activeRooms[roomId] || botRooms[roomId];
+            // Filtra solo las que están en memoria (activeRooms) para asegurar que aún están "vivas"
+            const inMemoryEligibleConversations = eligibleConversations.filter(dbConv => activeRooms[dbConv.roomId]);
 
-            if (roomData) {
-                socket.join(roomId);
-                socket.isSpying = true;
-                socket.spyRoomId = roomId;
+            if (inMemoryEligibleConversations.length > 0) {
+                const randomConversation = inMemoryEligibleConversations[Math.floor(Math.random() * inMemoryEligibleConversations.length)];
+                const roomId = randomConversation.roomId;
+                const roomData = activeRooms[roomId]; // Obtener la referencia de la sala en memoria
 
-                roomData.spyCount = (roomData.spyCount || 0) + 1; // Incrementa el contador de espías en memoria
-                await Conversation.updateOne({ roomId: roomId }, { $inc: { spyCount: 1 } }); // También en DB
+                if (roomData) { // Doble verificación por si acaso
+                    socket.join(roomId);
+                    socket.currentSpyRoomId = roomId; // Almacena la sala que está espiando
 
-                // Notificar a todos en la sala (chatters y otros espías) sobre el nuevo espía
-                io.to(roomId).emit('update_spy_info', {
-                    roomId: roomId,
-                    spyCount: roomData.spyCount,
-                    likeCount: roomData.likes
-                });
+                    roomData.spyCount = (roomData.spyCount || 0) + 1; // Incrementa el contador de espías en memoria
+                    await Conversation.updateOne({ roomId: roomId }, { $inc: { spyCount: 1 } }); // También en DB
 
-                // Enviar el historial de mensajes al espía
-                socket.emit('spy_conversation_found', {
-                    roomId: roomId,
-                    messages: roomData.messages,
-                    spyCount: roomData.spyCount,
-                    likeCount: roomData.likes
-                });
-                console.log(`Usuario ${socket.id} espiando sala ${roomId}`);
+                    // Notificar a todos en la sala (chatters y otros espías) sobre el nuevo espía
+                    io.to(roomId).emit('update_spy_info', {
+                        roomId: roomId,
+                        spyCount: roomData.spyCount,
+                        likeCount: roomData.likes
+                    });
+
+                    // Enviar el historial de mensajes al espía
+                    socket.emit('spy_conversation_found', {
+                        roomId: roomId,
+                        messages: roomData.messages,
+                        spyCount: roomData.spyCount,
+                        likeCount: roomData.likes
+                    });
+                    console.log(`Usuario ${socket.id} espiando sala ${roomId}`);
+                } else {
+                     // Esto no debería ocurrir si filtramos correctamente, pero es una salvaguarda
+                    socket.emit('no_spy_conversations');
+                    console.log('No hay conversaciones activas para espiar en memoria.');
+                }
             } else {
-                 // Si la conversación existe en DB pero no en memoria (ej. después de un reinicio del server), buscar otra
-                 console.warn(`Conversación ${roomId} encontrada en DB pero no en memoria. Buscando otra.`);
-                 socket.emit('no_spy_conversations'); // O pedir que intente de nuevo
+                socket.emit('no_spy_conversations');
+                console.log('No hay conversaciones activas en memoria para espiar.');
             }
         } else {
             socket.emit('no_spy_conversations');
-            console.log('No hay conversaciones para espiar en este momento.');
+            console.log('No hay conversaciones con suficientes mensajes para espiar en este momento.');
         }
     });
 
     socket.on('leave_spy_conversation', async (roomId) => {
-        if (socket.isSpying && socket.spyRoomId === roomId) {
-            let room = activeRooms[roomId] || botRooms[roomId];
+        if (socket.currentSpyRoomId === roomId) { // Asegura que el usuario estaba espiando esta sala
+            let room = activeRooms[roomId];
             if (room) {
                 room.spyCount = Math.max(0, (room.spyCount || 0) - 1); // Decrementa
                 await Conversation.updateOne({ roomId: roomId }, { $inc: { spyCount: -1 } }); // También en DB
@@ -348,15 +397,14 @@ io.on('connection', (socket) => {
                 });
             }
             socket.leave(roomId);
-            delete socket.isSpying;
-            delete socket.spyRoomId;
+            delete socket.currentSpyRoomId; // Limpiar el estado de espionaje del socket
             console.log(`${socket.id} ha dejado de espiar la sala ${roomId}`);
         }
     });
 
     // --- Lógica de Likes ---
     socket.on('send_like', async (roomId) => {
-        let room = activeRooms[roomId] || botRooms[roomId];
+        let room = activeRooms[roomId];
         if (room) {
             room.likes = (room.likes || 0) + 1; // Incrementa en memoria
             await Conversation.updateOne({ roomId: roomId }, { $inc: { likes: 1 } }); // También en DB
@@ -372,78 +420,4 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', async () => {
-        console.log('Usuario desconectado:', socket.id);
-
-        // Si estaba en chat humano-humano
-        let foundRoomId = null;
-        for (const roomId in activeRooms) {
-            const room = activeRooms[roomId];
-            if (room.users.some(u => u.id === socket.id)) {
-                foundRoomId = roomId;
-                break;
-            }
-        }
-
-        if (foundRoomId) {
-            const room = activeRooms[foundRoomId];
-            const leavingUserNick = room.users.find(u => u.id === socket.id)?.nick || 'Desconocido';
-
-            // Notificar a todos en la sala (incluidos espías)
-            io.to(foundRoomId).emit('chat_ended', { reason: `${leavingUserNick} se ha desconectado.`, roomId: foundRoomId });
-
-            // Marcar conversación como inactiva en DB
-            await Conversation.updateOne({ roomId: foundRoomId }, { $set: { isActive: false } });
-
-            // Limpiar la sala
-            const otherUser = room.users.find(u => u.id !== socket.id);
-            if (otherUser) {
-                io.sockets.sockets.get(otherUser.id)?.leave(foundRoomId);
-            }
-            delete activeRooms[foundRoomId];
-        }
-
-        // Si estaba en chat con bot
-        let foundBotRoomId = null;
-        for (const roomId in botRooms) {
-            const room = botRooms[roomId];
-            if (room.users.some(u => u.id === socket.id)) {
-                foundBotRoomId = roomId;
-                break;
-            }
-        }
-        if (foundBotRoomId) {
-            const room = botRooms[foundBotRoomId];
-            const leavingUserNick = room.users.find(u => u.id === socket.id)?.nick || 'Desconocido';
-
-            io.to(foundBotRoomId).emit('chat_ended', { reason: `${leavingUserNick} se ha desconectado.`, roomId: foundBotRoomId });
-            await Conversation.updateOne({ roomId: foundBotRoomId }, { $set: { isActive: false } });
-            delete botRooms[foundBotRoomId];
-        }
-
-        // Quitar de la lista de espera si estaba ahí
-        waitingUsers = waitingUsers.filter(user => user.id !== socket.id);
-
-        // Si el usuario era espía, manejar su salida
-        if (socket.isSpying && socket.spyRoomId) {
-            let room = activeRooms[socket.spyRoomId] || botRooms[socket.spyRoomId];
-            if (room) {
-                room.spyCount = Math.max(0, (room.spyCount || 0) - 1);
-                await Conversation.updateOne({ roomId: socket.spyRoomId }, { $inc: { spyCount: -1 } });
-                io.to(socket.spyRoomId).emit('update_spy_info', {
-                    roomId: socket.spyRoomId,
-                    spyCount: room.spyCount,
-                    likeCount: room.likes
-                });
-            }
-            socket.leave(socket.spyRoomId);
-            delete socket.isSpying;
-            delete socket.spyRoomId;
-            console.log(`${socket.id} ha dejado de espiar por desconexión.`);
-        }
-    });
-});
-
-// --- Iniciar el Servidor ---
-server.listen(PORT, () => {
-    console.log(`Servidor NewMegle escuchando en el puerto ${PORT}`);
-});
+        console.log('Usuario desconectado:',
