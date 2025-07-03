@@ -6,7 +6,7 @@
     <title>NewMegle</title>
     <style>
         body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; background-color: #f0f2f5; color: #333; }
-        .container { background-color: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); display: inline-block; }
+        .container { background-color: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); display: inline-block; max-width: 600px; width: 90%; }
         h1 { color: #5c67f2; }
         .options-menu button {
             padding: 10px 20px;
@@ -22,15 +22,25 @@
         .options-menu button:hover {
             background-color: #4a54e1;
         }
-        #chat-setup, #chat-room, #spy-room { display: none; margin-top: 20px; }
-        input, select { padding: 8px; margin: 5px; border-radius: 4px; border: 1px solid #ddd; }
-        button { padding: 8px 15px; background-color: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        #chat-setup, #chat-room, #spy-room { display: none; margin-top: 20px; text-align: left; }
+        input, select { padding: 8px; margin: 5px 0; border-radius: 4px; border: 1px solid #ddd; width: calc(100% - 12px); box-sizing: border-box; }
+        button { padding: 8px 15px; background-color: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; margin-top: 10px; }
         button:hover { background-color: #218838; }
-        #messages { border: 1px solid #eee; padding: 10px; height: 300px; overflow-y: scroll; margin-top: 10px; text-align: left; background-color: #f9f9f9; }
+        #messages, #spy-messages { border: 1px solid #eee; padding: 10px; height: 300px; overflow-y: scroll; margin-top: 10px; background-color: #f9f9f9; word-wrap: break-word; }
         .message { margin-bottom: 5px; }
         .message strong { color: #007bff; }
-        #chat-controls input { width: calc(100% - 100px); }
-        .likes-spy { color: #e74c3c; margin-left: 10px; }
+        #chat-controls { display: flex; margin-top: 10px; }
+        #chat-controls input { flex-grow: 1; margin-right: 5px; }
+        #chat-controls button { margin-top: 0; }
+        .disconnect-button { background-color: #dc3545 !important; margin-left: 10px; }
+        .disconnect-button:hover { background-color: #c82333 !important; }
+        .other-button { background-color: #17a2b8 !important; }
+        .other-button:hover { background-color: #138496 !important; }
+        .like-section { text-align: right; margin-bottom: 10px; font-size: 0.9em; color: #555; }
+        .like-section button { background-color: #ffc107; color: #333; border: 1px solid #ffc107; margin-left: 5px; padding: 5px 10px; }
+        .like-section button:hover { background-color: #e0a800; }
+        .system-message { font-style: italic; color: #6c757d; text-align: center; margin: 5px 0; }
+        .center-text { text-align: center; }
     </style>
 </head>
 <body>
@@ -54,7 +64,7 @@
                 <option value="">Idioma</option>
                 <option value="es">Español</option>
                 <option value="en">Inglés</option>
-                </select>
+            </select>
             <select id="interest-select">
                 <option value="">Buscar</option>
                 <option value="masculino">Masculino</option>
@@ -66,26 +76,32 @@
 
         <div id="chat-room">
             <h2>Chat con <span id="partner-info"></span></h2>
-            <p>Personas espiando: <span id="spy-count">0</span> | Likes: <span id="like-count">0</span> <button id="like-button">👍</button></p>
+            <div class="like-section">
+                Personas espiando: <span id="spy-count">0</span> | Likes: <span id="like-count">0</span> <button id="like-button">👍</button>
+            </div>
             <div id="messages"></div>
             <div id="chat-controls">
                 <input type="text" id="message-input" placeholder="Escribe tu mensaje...">
                 <button id="send-button">Enviar</button>
-                <button id="disconnect-chat-button" style="background-color: #dc3545;">Desconectar</button>
+                <button id="disconnect-chat-button" class="disconnect-button">Desconectar</button>
             </div>
         </div>
 
         <div id="spy-room">
-            <h2>Espiando Conversación <button id="next-spy-button" style="background-color: #17a2b8;">Espiar Otra</button></h2>
-            <p>Personas espiando: <span id="spy-count-spy">0</span> | Likes: <span id="like-count-spy">0</span> <button id="like-button-spy">👍</button></p>
+            <h2 class="center-text">Espiando Conversación</h2>
+            <div class="like-section">
+                Personas espiando: <span id="spy-count-spy">0</span> | Likes: <span id="like-count-spy">0</span> <button id="like-button-spy">👍</button>
+            </div>
             <div id="spy-messages"></div>
-            <button id="disconnect-spy-button" style="background-color: #dc3545;">Salir de Espiar</button>
+            <div style="text-align: center; margin-top: 10px;">
+                <button id="next-spy-button" class="other-button">Espiar Otra</button>
+                <button id="disconnect-spy-button" class="disconnect-button">Salir de Espiar</button>
+            </div>
         </div>
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
     <script>
-        // JavaScript para la lógica del frontend (lo programaremos en el siguiente paso)
         const socket = io();
 
         const mainMenu = document.getElementById('main-menu');
@@ -117,224 +133,40 @@
         const likeCountSpySpan = document.getElementById('like-count-spy');
         const likeButtonSpy = document.getElementById('like-button-spy');
 
-        let currentRoomId = null; // Para saber en qué conversación estoy
-        let isChatting = false; // true si estoy chateando, false si estoy espiando
+        let currentRoomId = null;
+        let isChatting = false;
 
-        // Lógica para mostrar/ocultar secciones
-        chatButton.addEventListener('click', () => {
+        // --- Funciones para mostrar/ocultar secciones ---
+        function showMainMenu() {
+            mainMenu.style.display = 'block';
+            chatSetup.style.display = 'none';
+            chatRoom.style.display = 'none';
+            spyRoom.style.display = 'none';
+            currentRoomId = null;
+            isChatting = false;
+        }
+
+        function showChatSetup() {
+            showMainMenu(); // Oculta todo primero
             mainMenu.style.display = 'none';
             chatSetup.style.display = 'block';
-            // Intentar identificar el idioma del navegador por defecto
             const userLang = navigator.language || navigator.userLanguage;
             if (userLang.startsWith('es')) {
                 languageSelect.value = 'es';
             } else if (userLang.startsWith('en')) {
                 languageSelect.value = 'en';
-            }
-        });
-
-        spyButton.addEventListener('click', () => {
-            mainMenu.style.display = 'none';
-            spyRoom.style.display = 'block';
-            isChatting = false;
-            socket.emit('request_spy_conversation');
-        });
-
-        // Lógica de chat
-        startChatButton.addEventListener('click', () => {
-            const nick = nickInput.value.trim();
-            const gender = genderSelect.value;
-            const language = languageSelect.value;
-            const interest = interestSelect.value;
-
-            if (nick && gender && language && interest) {
-                chatSetup.style.display = 'none';
-                chatRoom.style.display = 'block';
-                isChatting = true;
-                messagesDiv.innerHTML = ''; // Limpiar mensajes anteriores
-                socket.emit('join_chat', { nick, gender, language, interest });
             } else {
-                alert('Por favor, completa todos los campos.');
-            }
-        });
-
-        sendButton.addEventListener('click', () => {
-            const message = messageInput.value.trim();
-            if (message && currentRoomId) {
-                socket.emit('chat_message', { roomId: currentRoomId, message });
-                messageInput.value = '';
-            }
-        });
-
-        messageInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                sendButton.click();
-            }
-        });
-
-        disconnectChatButton.addEventListener('click', () => {
-            if (currentRoomId) {
-                socket.emit('leave_chat', currentRoomId);
-                currentRoomId = null;
-                chatRoom.style.display = 'none';
-                mainMenu.style.display = 'block';
-                resetChatUI();
-            }
-        });
-
-        // Lógica de like
-        likeButton.addEventListener('click', () => {
-            if (currentRoomId && isChatting) {
-                socket.emit('send_like', currentRoomId);
-            }
-        });
-
-        likeButtonSpy.addEventListener('click', () => {
-            if (currentRoomId && !isChatting) {
-                socket.emit('send_like', currentRoomId);
-            }
-        });
-
-
-        // Lógica de espionaje
-        nextSpyButton.addEventListener('click', () => {
-            if (currentRoomId) {
-                socket.emit('leave_spy_conversation', currentRoomId); // Salir de la actual antes de buscar otra
-            }
-            spyMessagesDiv.innerHTML = ''; // Limpiar mensajes anteriores
-            socket.emit('request_spy_conversation');
-        });
-
-        disconnectSpyButton.addEventListener('click', () => {
-            if (currentRoomId) {
-                socket.emit('leave_spy_conversation', currentRoomId);
-                currentRoomId = null;
-            }
-            spyRoom.style.display = 'none';
-            mainMenu.style.display = 'block';
-            resetSpyUI();
-        });
-
-
-        // Listeners de Socket.IO
-        socket.on('chat_started', (data) => {
-            currentRoomId = data.roomId;
-            partnerInfo.textContent = `${data.partnerNick} (${data.partnerGender})`;
-            appendMessage('Sistema', `¡Has sido emparejado con ${data.partnerNick} (${data.partnerGender})!`);
-            updateSpyInfo(data.spyCount, data.likeCount);
-        });
-
-        socket.on('bot_chat_started', (data) => {
-            currentRoomId = data.roomId;
-            partnerInfo.textContent = `Chatbot (${data.botName})`;
-            appendMessage('Sistema', `No se encontró un compañero humano. ¡Estás chateando con un ${data.botName} bot!`);
-            updateSpyInfo(data.spyCount, data.likeCount);
-        });
-
-        socket.on('chat_message', (data) => {
-            if (isChatting) {
-                appendMessage(data.nick, data.message);
-            }
-        });
-
-        socket.on('new_spy_message', (data) => {
-            if (!isChatting && currentRoomId === data.roomId) { // Solo si estoy espiando esta conversación
-                 appendSpyMessage(data.nick, data.message);
-            }
-        });
-
-        socket.on('chat_ended', (data) => {
-            const message = `La conversación ha terminado. ${data.reason}`;
-            if (isChatting && currentRoomId === data.roomId) {
-                appendMessage('Sistema', message);
-                currentRoomId = null; // Reiniciar ID de sala
-                // Opcional: mostrar botón para buscar nuevo chat
-                alert(message); // Podrías usar un modal más bonito
-                chatRoom.style.display = 'none';
-                chatSetup.style.display = 'block'; // Volver a la configuración para buscar nuevo chat
-                resetChatUI();
-            } else if (!isChatting && currentRoomId === data.roomId) {
-                 appendSpyMessage('Sistema', message);
-                 alert(message + " Puedes espiar otra conversación.");
-                 // Opcional: redirigir a buscar otra conversación
-                 spyMessagesDiv.innerHTML = ''; // Limpiar
-                 socket.emit('request_spy_conversation'); // Buscar automáticamente otra
-            }
-        });
-
-        socket.on('no_spy_conversations', () => {
-            if (!isChatting) {
-                appendSpyMessage('Sistema', 'No hay conversaciones activas para espiar en este momento. Intenta de nuevo más tarde.');
-                // Puedes ocultar el botón de like y espías y solo dejar el de "espiar otra" o "salir"
-                spyCountSpySpan.textContent = 0;
-                likeCountSpySpan.textContent = 0;
-            }
-        });
-
-
-        socket.on('spy_conversation_found', (data) => {
-            currentRoomId = data.roomId;
-            spyMessagesDiv.innerHTML = ''; // Limpiar mensajes anteriores
-            data.messages.forEach(msg => {
-                appendSpyMessage(msg.nick, msg.message);
-            });
-            updateSpyInfo(data.spyCount, data.likeCount);
-        });
-
-        socket.on('update_spy_info', (data) => {
-            if (currentRoomId === data.roomId) {
-                updateSpyInfo(data.spyCount, data.likeCount);
-            }
-        });
-
-        // Funciones de utilidad
-        function appendMessage(nick, message) {
-            const messageElement = document.createElement('div');
-            messageElement.classList.add('message');
-            messageElement.innerHTML = `<strong>${nick}:</strong> ${message}`;
-            messagesDiv.appendChild(messageElement);
-            messagesDiv.scrollTop = messagesDiv.scrollHeight; // Auto-scroll
-        }
-
-        function appendSpyMessage(nick, message) {
-            const messageElement = document.createElement('div');
-            messageElement.classList.add('message');
-            messageElement.innerHTML = `<strong>${nick}:</strong> ${message}`;
-            spyMessagesDiv.appendChild(messageElement);
-            spyMessagesDiv.scrollTop = spyMessagesDiv.scrollHeight; // Auto-scroll
-        }
-
-        function updateSpyInfo(spyCount, likeCount) {
-            if (isChatting) {
-                spyCountSpan.textContent = spyCount;
-                likeCountSpan.textContent = likeCount;
-            } else { // Si estoy espiando
-                spyCountSpySpan.textContent = spyCount;
-                likeCountSpySpan.textContent = likeCount;
+                languageSelect.value = ''; // Si no es español ni inglés, dejar sin selección
             }
         }
 
-        function resetChatUI() {
-            nickInput.value = '';
-            genderSelect.value = '';
-            languageSelect.value = '';
-            interestSelect.value = '';
-            partnerInfo.textContent = '';
-            messagesDiv.innerHTML = '';
-            messageInput.value = '';
-            spyCountSpan.textContent = '0';
-            likeCountSpan.textContent = '0';
-            isChatting = false; // Asegurarse
+        function showChatRoom() {
+            chatSetup.style.display = 'none';
+            chatRoom.style.display = 'block';
+            messagesDiv.innerHTML = ''; // Limpiar mensajes anteriores
+            messageInput.focus();
         }
 
-        function resetSpyUI() {
-            spyMessagesDiv.innerHTML = '';
-            spyCountSpySpan.textContent = '0';
-            likeCountSpySpan.textContent = '0';
-            isChatting = false; // Asegurarse
-        }
-
-
-    </script>
-</body>
-</html>
+        function showSpyRoom() {
+            showMainMenu(); // Oculta todo primero
+            mainMenu.style.
